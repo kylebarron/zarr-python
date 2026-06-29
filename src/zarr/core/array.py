@@ -142,6 +142,7 @@ from zarr.registry import (
     _parse_array_bytes_codec,
     _parse_bytes_bytes_codec,
     get_pipeline_class,
+    get_read_backend_class,
 )
 from zarr.storage._common import StorePath, ensure_no_existing_node, make_store_path
 from zarr.storage._utils import _relativize_path
@@ -153,6 +154,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from zarr.abc.codec import CodecPipeline
+    from zarr.abc.read_backend import ReadBackend
     from zarr.abc.store import Store
     from zarr.codecs.sharding import IndexLocation
     from zarr.core.dtype.wrapper import TBaseDType, TBaseScalar
@@ -2827,9 +2829,27 @@ class Array[T_ArrayMetadata: (ArrayV2Metadata, ArrayV3Metadata)]:
 
         if prototype is None:
             prototype = default_buffer_prototype()
+        indexer = BasicIndexer(selection, self.shape, self._chunk_grid)
+
+        # Optional read backend (sync path): call the synchronous backend
+        # directly, bypassing the async event-loop bridge, when one is
+        # configured and can serve this read.
+        if out is None and not fields:
+            backend = _read_backend_for(
+                self.async_array.store_path,
+                self.async_array.metadata,
+                indexer,
+                prototype,
+                self.async_array.config,
+            )
+            if backend is not None:
+                return backend.read(
+                    self.async_array.store_path, self.async_array.metadata, indexer, prototype
+                )
+
         return sync(
             self.async_array._get_selection(
-                BasicIndexer(selection, self.shape, self._chunk_grid),
+                indexer,
                 out=out,
                 fields=fields,
                 prototype=prototype,
@@ -3065,6 +3085,23 @@ class Array[T_ArrayMetadata: (ArrayV2Metadata, ArrayV3Metadata)]:
         if prototype is None:
             prototype = default_buffer_prototype()
         indexer = OrthogonalIndexer(selection, self.shape, self._chunk_grid)
+
+        # Optional read backend (sync path): most ``arr[...]`` slice/int reads
+        # are routed here (treated as orthogonal). Call the synchronous backend
+        # directly, bypassing the async event-loop bridge, when it can serve it.
+        if out is None and not fields:
+            backend = _read_backend_for(
+                self.async_array.store_path,
+                self.async_array.metadata,
+                indexer,
+                prototype,
+                self.async_array.config,
+            )
+            if backend is not None:
+                return backend.read(
+                    self.async_array.store_path, self.async_array.metadata, indexer, prototype
+                )
+
         return sync(
             self.async_array._get_selection(
                 indexer=indexer, out=out, fields=fields, prototype=prototype
@@ -5349,6 +5386,27 @@ def _get_chunk_spec(
     )
 
 
+def _read_backend_for(
+    store_path: StorePath,
+    metadata: ArrayMetadata,
+    indexer: Indexer,
+    prototype: BufferPrototype,
+    config: ArrayConfig,
+) -> ReadBackend | None:
+    """Return a read backend that can serve this read, or None for the native path.
+
+    Returns None when no backend is configured or the configured backend declines
+    (``can_read`` is False) this particular read.
+    """
+    backend_cls = get_read_backend_class()
+    if backend_cls is None:
+        return None
+    backend = backend_cls()
+    if backend.can_read(store_path, metadata, indexer, prototype, config):
+        return backend
+    return None
+
+
 async def _get_selection(
     store_path: StorePath,
     metadata: ArrayMetadata,
@@ -5388,6 +5446,13 @@ async def _get_selection(
     NDArrayLikeOrScalar
         The selected data.
     """
+    # Optional read backend (async path): delegate the whole selection when one
+    # is configured and can serve it; otherwise fall through to the native path.
+    if out is None and not fields:
+        backend = _read_backend_for(store_path, metadata, indexer, prototype, config)
+        if backend is not None:
+            return await backend.read_async(store_path, metadata, indexer, prototype)
+
     # Get dtype from metadata
     if metadata.zarr_format == 2:
         zdtype = metadata.dtype
