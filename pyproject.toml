@@ -106,6 +106,8 @@ test = [
     "pytest-codspeed==5.0.3",
     "tomlkit==0.15.0",
     "uv==0.11.20",
+    # optional read-backend under integration test (see zarr.experimental.zarrista)
+    "zarrista>=0.1.0b5",
 ]
 remote-tests = [
     {include-group = "test"},
