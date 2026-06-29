@@ -144,6 +144,7 @@ config = Config(
             },
             "buffer": "zarr.buffer.cpu.Buffer",
             "ndbuffer": "zarr.buffer.cpu.NDBuffer",
+            "read_backend": None,
         }
     ],
     deprecations=deprecations,

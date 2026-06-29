@@ -102,6 +102,7 @@ def test_config_defaults_set() -> None:
                 },
                 "buffer": "zarr.buffer.cpu.Buffer",
                 "ndbuffer": "zarr.buffer.cpu.NDBuffer",
+                "read_backend": None,
             }
         ]
     )
@@ -110,6 +111,15 @@ def test_config_defaults_set() -> None:
     assert config.get("async.timeout") is None
     assert config.get("codec_pipeline.batch_size") == 1
     assert config.get("json_indent") == 2
+
+
+def test_read_backend_default_is_none() -> None:
+    assert config.get("read_backend") is None
+
+
+def test_read_backend_is_settable() -> None:
+    with config.set({"read_backend": "some.dotted.Path"}):
+        assert config.get("read_backend") == "some.dotted.Path"
 
 
 def test_array_config_init_defaults_match_global_config() -> None:
