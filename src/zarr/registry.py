@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         CodecPipeline,
     )
     from zarr.abc.numcodec import Numcodec
+    from zarr.abc.read_backend import ReadBackend
     from zarr.core.buffer import Buffer, NDBuffer
     from zarr.core.chunk_key_encodings import ChunkKeyEncoding
     from zarr.core.common import JSON
@@ -32,11 +33,13 @@ __all__ = [
     "get_codec_class",
     "get_ndbuffer_class",
     "get_pipeline_class",
+    "get_read_backend_class",
     "register_buffer",
     "register_chunk_key_encoding",
     "register_codec",
     "register_ndbuffer",
     "register_pipeline",
+    "register_read_backend",
 ]
 
 
@@ -62,6 +65,7 @@ _pipeline_registry: Registry[CodecPipeline] = Registry()
 _buffer_registry: Registry[Buffer] = Registry()
 _ndbuffer_registry: Registry[NDBuffer] = Registry()
 _chunk_key_encoding_registry: Registry[ChunkKeyEncoding] = Registry()
+_read_backend_registry: Registry[ReadBackend] = Registry()
 
 """
 The registry module is responsible for managing implementations of codecs,
@@ -112,6 +116,10 @@ def _collect_entrypoints() -> list[Registry[Any]]:
     _pipeline_registry.lazy_load_list.extend(
         entry_points.select(group="zarr", name="codec_pipeline")
     )
+    _read_backend_registry.lazy_load_list.extend(entry_points.select(group="zarr.read_backend"))
+    _read_backend_registry.lazy_load_list.extend(
+        entry_points.select(group="zarr", name="read_backend")
+    )
     for e in entry_points.select(group="zarr.codecs"):
         _codec_registries[e.name].lazy_load_list.append(e)
     for group in entry_points.groups:
@@ -124,6 +132,7 @@ def _collect_entrypoints() -> list[Registry[Any]]:
         _buffer_registry,
         _ndbuffer_registry,
         _chunk_key_encoding_registry,
+        _read_backend_registry,
     ]
 
 
@@ -156,6 +165,10 @@ def register_buffer(cls: type[Buffer], qualname: str | None = None) -> None:
 
 def register_chunk_key_encoding(key: str, cls: type) -> None:
     _chunk_key_encoding_registry.register(cls, key)
+
+
+def register_read_backend(cls: type[ReadBackend], qualname: str | None = None) -> None:
+    _read_backend_registry.register(cls, qualname=qualname)
 
 
 def get_codec_class(key: str, reload_config: bool = False) -> type[Codec]:
@@ -301,6 +314,28 @@ def get_chunk_key_encoding_class(key: str) -> type[ChunkKeyEncoding]:
             f"Chunk key encoding '{key}' not found in registered chunk key encodings: {list(_chunk_key_encoding_registry)}."
         )
     return _chunk_key_encoding_registry[key]
+
+
+def get_read_backend_class(reload_config: bool = False) -> type[ReadBackend] | None:
+    """Return the configured read backend class, or None for the native path.
+
+    The ``read_backend`` config holds the registry key (e.g. an entrypoint name)
+    of a class implementing the ``ReadBackend`` protocol, or ``None`` to use
+    zarr-python's native read path.
+    """
+    if reload_config:
+        _reload_config()
+    key = config.get("read_backend")
+    if key is None:
+        return None
+    _read_backend_registry.lazy_load(use_entrypoint_name=True)
+    backend_class = _read_backend_registry.get(key)
+    if backend_class:
+        return backend_class
+    raise BadConfigError(
+        f"Read backend '{key}' not found in registered read backends: "
+        f"{list(_read_backend_registry)}."
+    )
 
 
 _collect_entrypoints()
